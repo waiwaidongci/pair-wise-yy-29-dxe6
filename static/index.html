@@ -1,5 +1,28 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>数字凭证服务</title>
-<style>body{font:16px system-ui;max-width:1100px;margin:32px auto;padding:0 20px}pre{background:#f3f5f7;padding:16px;overflow:auto}button{padding:8px 14px}</style>
-<h1>数字凭证签发与验证</h1><p>通过 JSON API 完成模板创建、签发、最少披露、验证和撤销。身份由 <code>X-Actor</code> 与 <code>X-Role</code> 请求头模拟。</p><button onclick="loadState()">刷新状态</button><pre id="state">加载中...</pre>
-<script>async function loadState(){state.textContent=JSON.stringify(await (await fetch('/api/state')).json(),null,2)}loadState()</script>
+<style>body{font:16px system-ui;max-width:1100px;margin:32px auto;padding:0 20px}pre{background:#f3f5f7;padding:16px;overflow:auto}button{padding:8px 14px}input{padding:6px 8px;margin-right:8px}section{margin:24px 0}</style>
+<h1>数字凭证签发与验证</h1>
+<p>通过 JSON API 完成模板创建、签发、最少披露、验证和撤销。身份由 <code>X-Actor</code> 与 <code>X-Role</code> 请求头模拟。持有人出示时会生成带过期时间的核验凭条，凭条只携带本次披露的字段，且只能被受理方消费一次。</p>
+<section>
+<h2>受理方消费核验凭条</h2>
+<input id="actor" value="verifier-demo" placeholder="受理方身份（X-Actor）">
+<input id="receiptId" size="44" placeholder="凭条 ID（rcpt_...）">
+<button onclick="consumeReceipt()">消费凭条</button>
+<pre id="consumeResult">尚未消费</pre>
+</section>
+<section>
+<button onclick="loadState()">刷新状态</button>
+<pre id="state">加载中...</pre>
+</section>
+<script>
+async function consumeReceipt(){
+  const id=document.getElementById('receiptId').value.trim();
+  const res=await fetch('/api/receipts/'+encodeURIComponent(id)+'/consume',{method:'POST',headers:{'Content-Type':'application/json','X-Actor':document.getElementById('actor').value.trim()},body:'{}'});
+  document.getElementById('consumeResult').textContent=JSON.stringify(await res.json(),null,2);
+  loadState();
+}
+async function loadState(){
+  document.getElementById('state').textContent=JSON.stringify(await (await fetch('/api/state')).json(),null,2);
+}
+loadState();
+</script>
 </html>
