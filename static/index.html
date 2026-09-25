@@ -1,5 +1,17 @@
 <!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>数字凭证服务</title>
-<style>body{font:16px system-ui;max-width:1100px;margin:32px auto;padding:0 20px}pre{background:#f3f5f7;padding:16px;overflow:auto}button{padding:8px 14px}</style>
-<h1>数字凭证签发与验证</h1><p>通过 JSON API 完成模板创建、签发、最少披露、验证和撤销。身份由 <code>X-Actor</code> 与 <code>X-Role</code> 请求头模拟。</p><button onclick="loadState()">刷新状态</button><pre id="state">加载中...</pre>
-<script>async function loadState(){state.textContent=JSON.stringify(await (await fetch('/api/state')).json(),null,2)}loadState()</script>
+<style>body{font:16px system-ui;max-width:1100px;margin:32px auto;padding:0 20px}pre{background:#f3f5f7;padding:16px;overflow:auto}button{padding:8px 14px}input{padding:6px 10px;margin-right:8px}section{border-top:1px solid #ddd;margin-top:24px;padding-top:12px}</style>
+<h1>数字凭证签发与验证</h1><p>通过 JSON API 完成模板创建、签发、最少披露、验证和撤销。身份由 <code>X-Actor</code> 与 <code>X-Role</code> 请求头模拟。</p>
+<section><h2>核验凭条消费（受理方入口）</h2>
+<p>持有人出示时会生成带过期时间的核验凭条，只含本次披露的字段。受理方凭凭条 ID 消费并记录结果；凭条过期、凭证被撤销、争议中或凭条已用过时返回对应状态，不会生成新的有效记录。</p>
+<input id="rid" placeholder="凭条 ID" size="6"><input id="rresult" placeholder="消费结果，如 approved" size="20"><button onclick="consume()">消费凭条</button>
+<pre id="rout">尚未消费</pre></section>
+<section><h2>服务状态</h2><button onclick="loadState()">刷新状态</button><pre id="state">加载中...</pre></section>
+<script>
+async function loadState(){state.textContent=JSON.stringify(await (await fetch('/api/state')).json(),null,2)}
+async function consume(){
+  const res=await fetch('/api/receipts/'+encodeURIComponent(rid.value)+'/consume',{method:'POST',headers:{'Content-Type':'application/json','X-Actor':'verifier-demo','X-Role':'verifier'},body:JSON.stringify({result:rresult.value})});
+  rout.textContent=JSON.stringify(await res.json(),null,2);loadState();
+}
+loadState()
+</script>
 </html>

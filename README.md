@@ -9,18 +9,22 @@ python3 app.py --init --seed
 python3 app.py
 ```
 
-默认地址 `http://127.0.0.1:8211`，也可使用 `--port` 与 `--db` 覆盖端口和数据库路径。身份使用 `X-Actor`、`X-Role` 请求头，角色为 `issuer`、`holder` 或 `regulator`。
+默认地址 `http://127.0.0.1:8211`，也可使用 `--port` 与 `--db` 覆盖端口和数据库路径。身份使用 `X-Actor`、`X-Role` 请求头，角色为 `issuer`、`holder`、`verifier` 或 `regulator`。
 
 ## 主要接口
 
 - `POST /api/keys/rotate`：签发方轮换密钥。
 - `POST /api/templates`：创建凭证模板。
 - `POST /api/credentials`：签发凭证，支持幂等键。
-- `POST /api/credentials/{id}/present`：按持有人选择披露字段并生成令牌。
+- `POST /api/credentials/{id}/present`：按持有人选择披露字段并生成令牌，同时签发一张带过期时间的核验凭条（可用 `ttl_seconds` 调整，默认 300 秒），凭条只携带本次披露的字段；已撤销或争议中的凭证不可出示。
+- `POST /api/receipts/{id}/consume`：受理方（`verifier`）消费凭条并持久化记录结果；凭条过期、凭证被撤销、争议中或凭条已用过时分别返回 `expired`/`revoked`/`disputed`/`used` 状态，且不会生成新的有效记录。
+- `GET /api/receipts/{id}`：查询凭条及其消费记录（披露字段、消费人、消费时间、结果）。
 - `POST /api/verify`：验证令牌，可指定验证时间与在线/离线模式。
 - `POST /api/credentials/{id}/revoke`：签发方撤销凭证。
 - `POST /api/credentials/{id}/dispute`、`POST /api/disputes/{id}/resolve`：提出和处理撤销争议。
 - `GET /api/state`、`GET /api/health`：查看状态和健康检查。
+
+页面入口（`static/index.html`）、凭条处理（`receipts.py`）与持久化记录（`Store` 中的 `receipts` 表）分开实现。
 
 ## 测试
 

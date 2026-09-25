@@ -17,32 +17,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from common import ApiError, canonical, iso, now, parse_time
+from receipts import ReceiptService
+
 DB_PATH = Path(__file__).with_name("data.db")
-
-
-def now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def iso(value: datetime | None = None) -> str:
-    return (value or now()).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def parse_time(value: str | None) -> datetime:
-    if not value:
-        return now()
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
-def canonical(value: object) -> bytes:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-
-
-class ApiError(Exception):
-    def __init__(self, status: int, message: str):
-        super().__init__(message)
-        self.status = status
-        self.message = message
 
 
 class Store:
@@ -106,6 +84,22 @@ class Store:
               created_at TEXT NOT NULL,
               resolved_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS receipts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              receipt_no TEXT NOT NULL UNIQUE,
+              credential_id INTEGER NOT NULL REFERENCES credentials(id),
+              issuer TEXT NOT NULL,
+              holder_id TEXT NOT NULL,
+              disclosed_fields_json TEXT NOT NULL,
+              claims_json TEXT NOT NULL,
+              token TEXT NOT NULL,
+              status TEXT NOT NULL CHECK(status IN ('issued','consumed')),
+              expires_at TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              consumed_by TEXT,
+              consumed_at TEXT,
+              consume_result TEXT
+            );
             CREATE TABLE IF NOT EXISTS audit_log (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               at TEXT NOT NULL,
@@ -135,6 +129,7 @@ class CredentialService:
     def __init__(self, store: Store):
         self.store = store
         self.conn = store.conn
+        self.receipts = ReceiptService(store)
 
     @staticmethod
     def _required_actor(actor: str | None, role: str | None, expected: str) -> str:
@@ -299,11 +294,17 @@ class CredentialService:
             self.store.audit(actor, "dispute.resolve", "dispute", dispute_id, {"decision": decision, "credential_status": new_status})
         return {"id": dispute_id, "status": decision, "credential_status": new_status, "resolution": resolution}
 
-    def present(self, actor: str | None, role: str | None, credential_id: int, disclosed_fields: list[str] | None) -> dict:
+    def present(self, actor: str | None, role: str | None, credential_id: int, disclosed_fields: list[str] | None, ttl_seconds: int | None = None) -> dict:
         actor = self._required_actor(actor, role, "holder")
         credential = self._row("credentials", credential_id)
         if credential["holder_id"] != actor:
             raise ApiError(403, "不能出示他人的凭证")
+        if credential["status"] == "disputed":
+            raise ApiError(409, "凭证争议处理中，当前不可出示")
+        if credential["status"] == "revoked":
+            raise ApiError(409, "凭证已撤销，不能出示")
+        if now() >= parse_time(credential["valid_until"]):
+            raise ApiError(409, "凭证已过有效期，不能出示")
         template = self._row("templates", credential["template_id"])
         allowed = [field["name"] for field in json.loads(template["fields_json"])]
         disclosed = disclosed_fields if disclosed_fields is not None else allowed
@@ -325,9 +326,10 @@ class CredentialService:
         ).fetchone()
         signature = hmac.new(bytes.fromhex(key["secret_hex"]), canonical(payload), hashlib.sha256).hexdigest()
         token = base64.urlsafe_b64encode(canonical({"payload": payload, "signature": signature})).decode().rstrip("=")
-        self.store.audit(actor, "credential.present", "credential", credential_id, {"disclosed_fields": disclosed})
+        receipt = self.receipts.issue(credential, disclosed, visible, token, ttl_seconds)
+        self.store.audit(actor, "credential.present", "credential", credential_id, {"disclosed_fields": disclosed, "receipt_id": receipt["id"]})
         self.conn.commit()
-        return {"token": token, "payload": payload, "signature": signature, "disclosed_fields": disclosed}
+        return {"token": token, "payload": payload, "signature": signature, "disclosed_fields": disclosed, "receipt": receipt}
 
     def verify(self, token: str, at: str | None = None, online: bool = True) -> dict:
         if not token:
@@ -381,7 +383,7 @@ class CredentialService:
         credentials = [self._credential_dict(row) for row in self.conn.execute("SELECT * FROM credentials ORDER BY id DESC")]
         templates = [dict(row) for row in self.conn.execute("SELECT id,issuer,code,name,status,validity_days FROM templates ORDER BY id DESC")]
         audits = [dict(row) for row in self.conn.execute("SELECT at,actor,action,entity_type,entity_id,details_json FROM audit_log ORDER BY id DESC LIMIT 30")]
-        return {"templates": templates, "credentials": credentials, "audits": audits}
+        return {"templates": templates, "credentials": credentials, "receipts": self.receipts.list(), "audits": audits}
 
     def seed(self) -> None:
         if not self.conn.execute("SELECT id FROM key_versions LIMIT 1").fetchone():
@@ -423,6 +425,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"status": "ok"})
             if parts == ["api", "state"]:
                 return self._json(200, self.service.state())
+            if len(parts) == 3 and parts[:2] == ["api", "receipts"]:
+                return self._json(200, self.service.receipts.get(int(parts[2])))
             if not parts:
                 page = (Path(__file__).parent / "static" / "index.html").read_bytes()
                 self.send_response(200)
@@ -453,7 +457,9 @@ class Handler(BaseHTTPRequestHandler):
             elif len(parts) == 4 and parts[:2] == ["api", "credentials"] and parts[3] == "dispute":
                 result = self.service.dispute(actor, role, int(parts[2]), body.get("reason", ""))
             elif len(parts) == 4 and parts[:2] == ["api", "credentials"] and parts[3] == "present":
-                result = self.service.present(actor, role, int(parts[2]), body.get("disclosed_fields"))
+                result = self.service.present(actor, role, int(parts[2]), body.get("disclosed_fields"), body.get("ttl_seconds"))
+            elif len(parts) == 4 and parts[:2] == ["api", "receipts"] and parts[3] == "consume":
+                result = self.service.receipts.consume(actor, role, int(parts[2]), body.get("result", ""), body.get("at"))
             elif len(parts) == 4 and parts[:2] == ["api", "disputes"] and parts[3] == "resolve":
                 result = self.service.resolve_dispute(actor, role, int(parts[2]), body.get("decision", ""), body.get("resolution", ""))
             elif parts == ["api", "verify"]:
